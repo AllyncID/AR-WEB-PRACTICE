@@ -89,6 +89,7 @@
             border: 1px solid rgba(255, 255, 255, 0.3);
             border-radius: 20px;
             box-shadow: 0 0 20px rgba(255, 51, 102, 0.1);
+            transition: border-color 0.3s ease;
         }
         
         .scanner-bracket::before, .scanner-bracket::after {
@@ -187,6 +188,25 @@
             margin-bottom: 20px;
             display: none;
         }
+        
+        /* Floating interaction hint */
+        .interact-hint {
+            position: absolute;
+            bottom: 30px;
+            width: 100%;
+            text-align: center;
+            color: white;
+            font-size: 0.9rem;
+            opacity: 0.8;
+            pointer-events: none;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.5);
+            animation: pulseText 2s infinite;
+        }
+
+        @keyframes pulseText {
+            0%, 100% { opacity: 0.6; }
+            50% { opacity: 1; }
+        }
 
         @keyframes spin {
             0% { transform: rotate(0deg); }
@@ -216,9 +236,7 @@
             <div class="scan-line"></div>
         </div>
         
-        <div style="padding: 20px; text-align: center; color: rgba(255,255,255,0.5); font-size: 0.8rem;">
-            Powered by WebAR
-        </div>
+        <div class="interact-hint">Tap layar untuk mengubah warna Aura</div>
     </div>
 
     <!-- Container Render 3D -->
@@ -230,16 +248,18 @@
         // Import GLTFLoader untuk load model Blender (.glb/.gltf)
         import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
-        // --- KONFIGURASI MODEL ---
-        // Ubah ke 'true' jika Anda sudah memiliki file .glb di folder assets
+        // --- KONFIGURASI ---
         const USE_EXTERNAL_MODEL = false; 
         const MODEL_URL = './assets/heart.glb'; 
 
         // --- Variabel Global ---
         let mindarThree = null;
         let heartMesh = null;
-        let pulseSpeed = 2.5; // Kecepatan detak
+        let particles = []; // Array untuk menyimpan partikel
+        let haloRings = []; // Array untuk cincin hologram
+        let pulseSpeed = 2.0;
         let isTracking = false;
+        let currentHue = 0; // Untuk interaksi warna
 
         const startButton = document.getElementById('start-button');
         const startScreen = document.getElementById('start-screen');
@@ -247,57 +267,115 @@
         const uiLayer = document.getElementById('ui-layer');
         const statusText = document.getElementById('status-text');
 
-        // --- Fungsi Load Model Blender (.glb) ---
-        function loadGLBModel(sceneGroup) {
-            const loader = new GLTFLoader();
-            
-            loader.load(
-                MODEL_URL,
-                (gltf) => {
-                    heartMesh = gltf.scene;
-                    
-                    // --- Pengaturan Awal Model Blender ---
-                    // Sesuaikan Scale agar tidak terlalu besar/kecil di kamera
-                    heartMesh.scale.set(0.5, 0.5, 0.5); 
-                    
-                    // Sesuaikan Posisi (X, Y, Z)
-                    heartMesh.position.set(0, 0, 0.2);
-                    
-                    // Sesuaikan Rotasi (opsional, tergantung export Blender)
-                    // heartMesh.rotation.x = Math.PI / 2;
+        // --- Fungsi Helper: Bikin Partikel Melayang ---
+        function createParticles(count) {
+            const particleGroup = new THREE.Group();
+            const geometry = new THREE.SphereGeometry(0.02, 8, 8);
+            const material = new THREE.MeshBasicMaterial({
+                color: 0xffaaaa,
+                transparent: true,
+                opacity: 0.8
+            });
 
-                    // Mengaktifkan shadow/casting jika perlu
-                    heartMesh.traverse((node) => {
-                        if (node.isMesh) {
-                            node.castShadow = true;
-                            node.receiveShadow = true;
-                            // Anda bisa override material di sini jika mau
-                            // node.material.emissive = new THREE.Color(0xaa0000);
-                        }
-                    });
-
-                    sceneGroup.add(heartMesh);
-                    console.log("Model Blender berhasil dimuat!");
-                },
-                (xhr) => {
-                    console.log((xhr.loaded / xhr.total * 100) + '% loaded');
-                },
-                (error) => {
-                    console.error('Error memuat model:', error);
-                    // Fallback ke procedural jika gagal load file
-                    alert("Gagal load model .glb, fallback ke procedural.");
-                    heartMesh = createProceduralHeart();
-                    sceneGroup.add(heartMesh);
-                }
-            );
+            for(let i = 0; i < count; i++) {
+                const mesh = new THREE.Mesh(geometry, material.clone()); // Clone material biar bisa beda opacity
+                // Random posisi awal di sekitar pusat
+                resetParticle(mesh);
+                particles.push({
+                    mesh: mesh,
+                    speed: 0.005 + Math.random() * 0.01,
+                    wobble: Math.random() * Math.PI * 2
+                });
+                particleGroup.add(mesh);
+            }
+            return particleGroup;
         }
 
-        // --- Fungsi Membuat Jantung 3D Procedural (Fallback) ---
+        function resetParticle(mesh) {
+            const r = 0.3 * Math.sqrt(Math.random()); // Sebaran radius
+            const theta = Math.random() * 2 * Math.PI;
+            
+            mesh.position.x = r * Math.cos(theta);
+            mesh.position.y = r * Math.sin(theta); // Di ThreeJS MindAR, Y seringkali atas/bawah relatif marker
+            mesh.position.z = -0.2 + Math.random() * 0.4; // Variasi kedalaman
+            
+            // Kita atur posisi awal Y agak bawah biar naik ke atas
+            mesh.position.y = -0.5 + Math.random() * 0.3;
+            
+            mesh.material.opacity = 0;
+            mesh.scale.set(1,1,1);
+        }
+
+        // --- Fungsi Helper: Bikin Cincin Hologram ---
+        function createHoloRings() {
+            const group = new THREE.Group();
+
+            const mat = new THREE.MeshBasicMaterial({
+                color: 0xff3366,
+                transparent: true,
+                opacity: 0.3,
+                side: THREE.DoubleSide,
+                wireframe: true // Mode wireframe biar kelihatan tech
+            });
+            
+            // Cincin 1 (Horizontal)
+            const geo1 = new THREE.TorusGeometry(0.6, 0.005, 16, 100);
+            const ring1 = new THREE.Mesh(geo1, mat);
+            group.add(ring1);
+            haloRings.push({ mesh: ring1, axis: 'z', speed: 0.5 });
+
+            // Cincin 2 (Miring)
+            const geo2 = new THREE.TorusGeometry(0.5, 0.005, 16, 100);
+            const ring2 = new THREE.Mesh(geo2, mat);
+            ring2.rotation.x = Math.PI / 2.5;
+            group.add(ring2);
+            haloRings.push({ mesh: ring2, axis: 'y', speed: -0.8 });
+
+             // Cincin 3 (Kecil Vertikal)
+            const geo3 = new THREE.TorusGeometry(0.4, 0.002, 16, 80);
+            const ring3 = new THREE.Mesh(geo3, mat);
+            ring3.rotation.y = Math.PI / 2;
+            group.add(ring3);
+            haloRings.push({ mesh: ring3, axis: 'x', speed: 1.2 });
+
+            return group;
+        }
+
+        // --- Load GLB ---
+        function loadGLBModel(sceneGroup) {
+            const loader = new GLTFLoader();
+            loader.load(MODEL_URL, (gltf) => {
+                heartMesh = gltf.scene;
+                heartMesh.scale.set(0.5, 0.5, 0.5); 
+                heartMesh.position.set(0, 0, 0); // Center
+                
+                heartMesh.traverse((node) => {
+                    if (node.isMesh) {
+                        node.castShadow = true;
+                        node.receiveShadow = true;
+                        // Ganti material jadi crystal-like
+                        node.material = new THREE.MeshPhysicalMaterial({
+                            color: 0xff0040,
+                            metalness: 0.1,
+                            roughness: 0.1,
+                            transmission: 0.6, // Glass effect
+                            thickness: 1.0,
+                            clearcoat: 1.0
+                        });
+                    }
+                });
+                sceneGroup.add(heartMesh);
+            }, undefined, (error) => {
+                console.error('Error load GLB, fallback', error);
+                heartMesh = createProceduralHeart();
+                sceneGroup.add(heartMesh);
+            });
+        }
+
+        // --- Procedural Heart (Fallback) ---
         function createProceduralHeart() {
             const x = 0, y = 0;
             const heartShape = new THREE.Shape();
-
-            // Menggambar bentuk hati menggunakan kurva Bezier
             heartShape.moveTo(x + 0.5, y + 0.5);
             heartShape.bezierCurveTo(x + 0.5, y + 0.5, x + 0.4, y, x, y);
             heartShape.bezierCurveTo(x - 0.6, y, x - 0.6, y + 0.7, x - 0.6, y + 0.7);
@@ -306,171 +384,191 @@
             heartShape.bezierCurveTo(x + 1.6, y + 0.7, x + 1.6, y, x + 1.0, y);
             heartShape.bezierCurveTo(x + 0.7, y, x + 0.5, y + 0.5, x + 0.5, y + 0.5);
 
-            // Ekstrusi bentuk 2D menjadi 3D
-            const extrudeSettings = {
-                depth: 0.4,
-                bevelEnabled: true,
-                bevelSegments: 4,
-                steps: 2,
-                bevelSize: 0.1,
-                bevelThickness: 0.1
-            };
-
-            const geometry = new THREE.ExtrudeGeometry(heartShape, extrudeSettings);
+            const geometry = new THREE.ExtrudeGeometry(heartShape, {
+                depth: 0.3, bevelEnabled: true, bevelSegments: 4, steps: 2, bevelSize: 0.1, bevelThickness: 0.1
+            });
+            geometry.center();
             
-            // Material agar terlihat seperti Kristal/Ruby
+            // Material Crystal High-End
             const material = new THREE.MeshPhysicalMaterial({
-                color: 0xff0040,      // Merah
-                emissive: 0x550000,   // Glow merah gelap
-                metalness: 0.1,
-                roughness: 0.1,
-                clearcoat: 1.0,       // Lapisan kilap
-                clearcoatRoughness: 0.1,
-                transmission: 0.2,    // Sedikit transparan
-                opacity: 0.9,
-                transparent: true
+                color: 0xff0040,      
+                emissive: 0x330000,
+                metalness: 0.2,
+                roughness: 0.05,      // Sangat mulus
+                clearcoat: 1.0,
+                clearcoatRoughness: 0.0,
+                transmission: 0.5,    // Tembus pandang seperti kaca
+                thickness: 2.0,       // Efek ketebalan kaca
+                ior: 1.5              // Indeks refraksi (Ruby/Glass)
             });
 
             const mesh = new THREE.Mesh(geometry, material);
-            
-            // Center the geometry
-            geometry.center();
-            
-            // Rotasi awal agar berdiri tegak menghadap kamera
-            mesh.rotation.x = Math.PI;
-            
-            // Posisikan
-            mesh.position.z = 0.5;
-            
+            mesh.rotation.x = Math.PI; // Flip biar tegak
+            // mesh.position.z = 0.2;
             return mesh;
         }
 
         // --- Inisialisasi AR ---
         async function initAR() {
-            // Tampilkan loading
             startButton.style.display = 'none';
             loader.style.display = 'block';
 
-            // Setup MindAR
+            // Gunakan file .mind Anda sendiri di sini untuk produksi
             mindarThree = new MindARThree({
                 container: document.querySelector('#container'),
                 imageTargetSrc: "https://cdn.jsdelivr.net/gh/hiukim/mind-ar-js@1.2.0/examples/image-tracking/assets/card-example/card.mind",
-                filterMinCF: 0.0001, // Smoothing tracking
+                filterMinCF: 0.0001, 
                 filterBeta: 0.001,
             });
 
             const { renderer, scene, camera } = mindarThree;
 
-            // Setup Lighting
-            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            // Pencahayaan yang lebih dramatis
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
             scene.add(ambientLight);
 
-            const pointLight = new THREE.PointLight(0xffffff, 2);
-            pointLight.position.set(0, 0, 5); // Cahaya dari arah kamera
-            scene.add(pointLight);
+            const spotLight = new THREE.SpotLight(0xffffff, 5);
+            spotLight.position.set(0, 0, 5);
+            spotLight.angle = 0.5;
+            spotLight.penumbra = 0.5;
+            scene.add(spotLight);
             
-            // Cahaya merah tambahan untuk efek dramatis
-            const redLight = new THREE.PointLight(0xff0040, 1.5, 2);
-            redLight.position.set(0, 0.5, 0.5);
-            scene.add(redLight);
-
-            // Setup Anchor (Marker Index 0)
+            // Main Anchor
             const anchor = mindarThree.addAnchor(0);
             
-            // Group untuk animasi
-            const heartGroup = new THREE.Group();
-            anchor.group.add(heartGroup);
+            // Container utama agar mudah diatur posisinya
+            const mainGroup = new THREE.Group();
+            mainGroup.position.z = 0.2; // Sedikit melayang dari kertas/gelang
+            anchor.group.add(mainGroup);
 
-            // --- PILIH MODEL (BLENDER vs PROCEDURAL) ---
+            // 1. Tambah Heart
             if (USE_EXTERNAL_MODEL) {
-                // Load dari file .glb
-                loadGLBModel(heartGroup);
+                loadGLBModel(mainGroup);
             } else {
-                // Generate dari kode
                 heartMesh = createProceduralHeart();
                 heartMesh.scale.set(0.3, 0.3, 0.3); 
-                heartGroup.add(heartMesh);
+                mainGroup.add(heartMesh);
             }
 
-            // Event Listeners untuk Tracking Status
+            // 2. Tambah Hologram Rings
+            const rings = createHoloRings();
+            mainGroup.add(rings);
+
+            // 3. Tambah Particles
+            const particlesMesh = createParticles(30);
+            mainGroup.add(particlesMesh);
+
+            // --- Handler Tracking ---
             anchor.onTargetFound = () => {
                 isTracking = true;
-                statusText.innerText = "Target Found - Connected";
-                statusText.style.borderColor = "#00ff00";
-                statusText.style.color = "#00ff00";
-                statusText.style.background = "rgba(0, 255, 0, 0.1)";
-                document.querySelector('.scanner-bracket').style.borderColor = "#00ff00";
+                statusText.innerText = "LINK ESTABLISHED";
+                statusText.style.borderColor = "#00ffea";
+                statusText.style.color = "#00ffea";
+                statusText.style.background = "rgba(0, 255, 234, 0.1)";
+                document.querySelector('.scanner-bracket').style.borderColor = "#00ffea";
+                document.querySelector('.scanner-bracket').style.boxShadow = "0 0 30px #00ffea";
             };
 
             anchor.onTargetLost = () => {
                 isTracking = false;
-                statusText.innerText = "Scanning for Bracelet...";
+                statusText.innerText = "SCANNING TARGET...";
                 statusText.style.borderColor = "#ff3366";
                 statusText.style.color = "#ff3366";
                 statusText.style.background = "rgba(255, 51, 102, 0.2)";
                 document.querySelector('.scanner-bracket').style.borderColor = "rgba(255, 255, 255, 0.3)";
+                document.querySelector('.scanner-bracket').style.boxShadow = "none";
             };
 
-            // Start AR Engine
+            // --- Start ---
             try {
                 await mindarThree.start();
-                
-                // Transisi UI
                 startScreen.classList.add('hidden');
                 uiLayer.classList.remove('hidden');
                 
-                // Animation Loop
                 renderer.setAnimationLoop(() => {
                     renderLoop();
                     renderer.render(scene, camera);
                 });
-                
             } catch (error) {
-                console.error("Gagal memulai AR:", error);
-                alert("Gagal mengakses kamera. Pastikan izin kamera diberikan dan menggunakan HTTPS.");
+                console.error(error);
+                alert("Camera error.");
                 loader.style.display = 'none';
                 startButton.style.display = 'block';
             }
         }
 
-        // --- Render / Animation Loop ---
+        // --- Animasi Loop ---
         function renderLoop() {
+            const time = Date.now() * 0.001;
+            
+            // 1. Animasi Heart
             if (heartMesh) {
-                const time = Date.now() * 0.001;
+                // Detak jantung ritmis (sinus wave dimodifikasi)
+                const pulse = Math.sin(time * pulseSpeed * Math.PI) * 0.1 + 1;
                 
-                // 1. Animasi Detak Jantung (Pulse)
-                const pulse = Math.sin(time * pulseSpeed * Math.PI) * 0.1 + 1; // Base pulse
-                
-                // Tambahkan efek rotasi lambat agar terlihat 3D
-                // Jika pakai model Blender, mungkin sumbu rotasinya berbeda (misal rotation.z atau rotation.y)
-                heartMesh.rotation.y = Math.sin(time * 0.5) * 0.3; 
-                
-                // Terapkan scale
-                // Kita gunakan scale relatif terhadap scale awal (0.3 untuk procedural, 0.5 untuk GLB contoh)
-                const initialScale = USE_EXTERNAL_MODEL ? 0.5 : 0.3;
-                const currentScale = initialScale * pulse;
-                heartMesh.scale.set(currentScale, currentScale, currentScale);
-                
-                // 2. Animasi Emissive (Hanya bekerja jika material support emissive)
-                if (heartMesh.material && heartMesh.material.emissiveIntensity !== undefined) {
-                     heartMesh.material.emissiveIntensity = (pulse - 0.8) * 3;
-                }
-                
-                // Jika model blender punya anak (children meshes), kita bisa iterasi untuk update materialnya juga
-                if (USE_EXTERNAL_MODEL) {
-                    heartMesh.traverse((node) => {
-                        if (node.isMesh && node.material && node.material.emissiveIntensity !== undefined) {
-                             // node.material.emissiveIntensity = (pulse - 0.8) * 3; // Uncomment jika ingin emissive pulse
-                        }
-                    });
+                // Rotasi Floating
+                heartMesh.rotation.y = Math.sin(time * 0.5) * 0.2;
+                heartMesh.rotation.z = Math.cos(time * 0.3) * 0.1;
+
+                // Scale Pulse
+                const baseScale = USE_EXTERNAL_MODEL ? 0.5 : 0.3;
+                heartMesh.scale.set(baseScale * pulse, baseScale * pulse, baseScale * pulse);
+
+                // Emissive Pulse (Glow)
+                if (heartMesh.material) {
+                    // Warna berubah pelan (Rainbow effect dikit) + pulse intensity
+                    const intensity = (pulse - 0.8) * 4;
+                    heartMesh.material.emissiveIntensity = intensity > 0 ? intensity : 0;
+                    
+                    // Update warna dari interaksi user
+                    const color = new THREE.Color().setHSL(currentHue, 1, 0.5);
+                    heartMesh.material.color.lerp(color, 0.05);
+                    heartMesh.material.emissive.lerp(color, 0.05);
                 }
             }
+
+            // 2. Animasi Cincin Hologram (Tech Rotate)
+            haloRings.forEach(ring => {
+                if(ring.axis === 'x') ring.mesh.rotation.x += ring.speed * 0.01;
+                if(ring.axis === 'y') ring.mesh.rotation.y += ring.speed * 0.01;
+                if(ring.axis === 'z') ring.mesh.rotation.z += ring.speed * 0.01;
+                
+                // Efek "Breathing" pada cincin
+                const s = 1 + Math.sin(time * 2) * 0.05;
+                ring.mesh.scale.set(s,s,s);
+            });
+
+            // 3. Animasi Partikel (Floating Up)
+            particles.forEach(p => {
+                p.mesh.position.y += p.speed;
+                // Gerakan kiri-kanan (wobble)
+                p.mesh.position.x += Math.sin(time * 2 + p.wobble) * 0.002;
+                
+                // Fade in/out logic
+                if (p.mesh.position.y > 0.6) {
+                    p.mesh.material.opacity -= 0.02;
+                } else if (p.mesh.material.opacity < 0.8) {
+                    p.mesh.material.opacity += 0.02;
+                }
+
+                // Reset kalau sudah terlalu tinggi/hilang
+                if (p.mesh.position.y > 0.8 || p.mesh.material.opacity <= 0) {
+                    resetParticle(p.mesh);
+                }
+            });
         }
 
-        // Event Start Button
-        startButton.addEventListener('click', () => {
-            initAR();
+        // --- Interaction (Tap to Change Color) ---
+        window.addEventListener('click', (e) => {
+            // Cek apakah klik tombol start, jika bukan baru ganti warna
+            if(e.target.id !== 'start-button') {
+                currentHue = Math.random(); // Ganti warna target secara acak
+                pulseSpeed = 4.0; // Jantung berdetak cepat sesaat
+                setTimeout(() => { pulseSpeed = 2.0; }, 1000); // Balik normal
+            }
         });
+
+        startButton.addEventListener('click', initAR);
 
     </script>
 </body>
