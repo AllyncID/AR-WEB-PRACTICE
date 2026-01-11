@@ -227,6 +227,13 @@
     <script type="module">
         import * as THREE from 'three';
         import { MindARThree } from 'mindar-image-three';
+        // Import GLTFLoader untuk load model Blender (.glb/.gltf)
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+        // --- KONFIGURASI MODEL ---
+        // Ubah ke 'true' jika Anda sudah memiliki file .glb di folder assets
+        const USE_EXTERNAL_MODEL = false; 
+        const MODEL_URL = './assets/heart.glb'; 
 
         // --- Variabel Global ---
         let mindarThree = null;
@@ -240,8 +247,52 @@
         const uiLayer = document.getElementById('ui-layer');
         const statusText = document.getElementById('status-text');
 
-        // --- Fungsi Membuat Jantung 3D Procedural ---
-        // Kita gunakan ini agar tidak perlu load eksternal .glb untuk demo ini
+        // --- Fungsi Load Model Blender (.glb) ---
+        function loadGLBModel(sceneGroup) {
+            const loader = new GLTFLoader();
+            
+            loader.load(
+                MODEL_URL,
+                (gltf) => {
+                    heartMesh = gltf.scene;
+                    
+                    // --- Pengaturan Awal Model Blender ---
+                    // Sesuaikan Scale agar tidak terlalu besar/kecil di kamera
+                    heartMesh.scale.set(0.5, 0.5, 0.5); 
+                    
+                    // Sesuaikan Posisi (X, Y, Z)
+                    heartMesh.position.set(0, 0, 0.2);
+                    
+                    // Sesuaikan Rotasi (opsional, tergantung export Blender)
+                    // heartMesh.rotation.x = Math.PI / 2;
+
+                    // Mengaktifkan shadow/casting jika perlu
+                    heartMesh.traverse((node) => {
+                        if (node.isMesh) {
+                            node.castShadow = true;
+                            node.receiveShadow = true;
+                            // Anda bisa override material di sini jika mau
+                            // node.material.emissive = new THREE.Color(0xaa0000);
+                        }
+                    });
+
+                    sceneGroup.add(heartMesh);
+                    console.log("Model Blender berhasil dimuat!");
+                },
+                (xhr) => {
+                    console.log((xhr.loaded / xhr.total * 100) + '% loaded');
+                },
+                (error) => {
+                    console.error('Error memuat model:', error);
+                    // Fallback ke procedural jika gagal load file
+                    alert("Gagal load model .glb, fallback ke procedural.");
+                    heartMesh = createProceduralHeart();
+                    sceneGroup.add(heartMesh);
+                }
+            );
+        }
+
+        // --- Fungsi Membuat Jantung 3D Procedural (Fallback) ---
         function createProceduralHeart() {
             const x = 0, y = 0;
             const heartShape = new THREE.Shape();
@@ -286,7 +337,10 @@
             geometry.center();
             
             // Rotasi awal agar berdiri tegak menghadap kamera
-            mesh.rotation.x = Math.PI; 
+            mesh.rotation.x = Math.PI;
+            
+            // Posisikan
+            mesh.position.z = 0.5;
             
             return mesh;
         }
@@ -298,9 +352,6 @@
             loader.style.display = 'block';
 
             // Setup MindAR
-            // NOTE: 'imageTargetSrc' di sini menggunakan file contoh dari CDN MindAR (kartu).
-            // Untuk produksi: Anda harus mengcompile gambar gelang Anda menjadi .mind file
-            // menggunakan Compiler Tools MindAR: https://hiukim.github.io/mind-ar-js-doc/tools/compile
             mindarThree = new MindARThree({
                 container: document.querySelector('#container'),
                 imageTargetSrc: "https://cdn.jsdelivr.net/gh/hiukim/mind-ar-js@1.2.0/examples/image-tracking/assets/card-example/card.mind",
@@ -326,18 +377,20 @@
             // Setup Anchor (Marker Index 0)
             const anchor = mindarThree.addAnchor(0);
             
-            // Tambahkan Heart ke Anchor
-            heartMesh = createProceduralHeart();
-            heartMesh.scale.set(0.3, 0.3, 0.3); // Skala awal
-            
             // Group untuk animasi
             const heartGroup = new THREE.Group();
-            heartGroup.add(heartMesh);
-            
-            // Posisikan sedikit di atas marker (floating effect)
-            heartGroup.position.z = 0.5; 
-            
             anchor.group.add(heartGroup);
+
+            // --- PILIH MODEL (BLENDER vs PROCEDURAL) ---
+            if (USE_EXTERNAL_MODEL) {
+                // Load dari file .glb
+                loadGLBModel(heartGroup);
+            } else {
+                // Generate dari kode
+                heartMesh = createProceduralHeart();
+                heartMesh.scale.set(0.3, 0.3, 0.3); 
+                heartGroup.add(heartMesh);
+            }
 
             // Event Listeners untuk Tracking Status
             anchor.onTargetFound = () => {
@@ -386,22 +439,31 @@
                 const time = Date.now() * 0.001;
                 
                 // 1. Animasi Detak Jantung (Pulse)
-                // Menggunakan fungsi sin untuk pembesaran dan pengecilan ritmis
-                // Pola detak jantung manusia: "Lubb-dupp" (dua puncak cepat)
-                // Kita simulasi sederhana dengan sin wave yang dimodifikasi
-                
                 const pulse = Math.sin(time * pulseSpeed * Math.PI) * 0.1 + 1; // Base pulse
                 
                 // Tambahkan efek rotasi lambat agar terlihat 3D
-                heartMesh.rotation.y = Math.sin(time * 0.5) * 0.3; // Swing kiri kanan pelan
+                // Jika pakai model Blender, mungkin sumbu rotasinya berbeda (misal rotation.z atau rotation.y)
+                heartMesh.rotation.y = Math.sin(time * 0.5) * 0.3; 
                 
                 // Terapkan scale
-                const baseScale = 0.3;
-                const currentScale = baseScale * pulse;
+                // Kita gunakan scale relatif terhadap scale awal (0.3 untuk procedural, 0.5 untuk GLB contoh)
+                const initialScale = USE_EXTERNAL_MODEL ? 0.5 : 0.3;
+                const currentScale = initialScale * pulse;
                 heartMesh.scale.set(currentScale, currentScale, currentScale);
                 
-                // 2. Animasi Emissive (Glow intensity berubah sesuai detak)
-                heartMesh.material.emissiveIntensity = (pulse - 0.8) * 3; // Glow makin terang saat membesar
+                // 2. Animasi Emissive (Hanya bekerja jika material support emissive)
+                if (heartMesh.material && heartMesh.material.emissiveIntensity !== undefined) {
+                     heartMesh.material.emissiveIntensity = (pulse - 0.8) * 3;
+                }
+                
+                // Jika model blender punya anak (children meshes), kita bisa iterasi untuk update materialnya juga
+                if (USE_EXTERNAL_MODEL) {
+                    heartMesh.traverse((node) => {
+                        if (node.isMesh && node.material && node.material.emissiveIntensity !== undefined) {
+                             // node.material.emissiveIntensity = (pulse - 0.8) * 3; // Uncomment jika ingin emissive pulse
+                        }
+                    });
+                }
             }
         }
 
