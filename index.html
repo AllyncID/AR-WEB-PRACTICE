@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Jewelry WebAR Experience</title>
+    
+    <!-- Script MindAR dan Three.js via CDN -->
+    <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+        "mindar-image-three": "https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js"
+      }
+    }
+    </script>
+
+    <style>
+        :root {
+            --primary: #ff3366;
+            --glass: rgba(255, 255, 255, 0.1);
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #000;
+        }
+
+        /* Container Video AR */
+        #container {
+            width: 100vw;
+            height: 100vh;
+            position: relative;
+            overflow: hidden;
+            z-index: 1;
+        }
+
+        /* UI Overlay */
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 10;
+            pointer-events: none; /* Biarkan klik tembus ke canvas jika perlu */
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+
+        /* Header */
+        .header {
+            padding: 20px;
+            text-align: center;
+            background: linear-gradient(to bottom, rgba(0,0,0,0.8), transparent);
+            color: white;
+        }
+        .header h1 {
+            font-size: 1.2rem;
+            margin: 0;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            font-weight: 300;
+        }
+        .status-pill {
+            display: inline-block;
+            margin-top: 8px;
+            padding: 4px 12px;
+            background: rgba(255, 51, 102, 0.2);
+            border: 1px solid var(--primary);
+            border-radius: 20px;
+            font-size: 0.7rem;
+            color: var(--primary);
+        }
+
+        /* Scanner Bracket Visuals */
+        .scanner-bracket {
+            position: absolute;
+            width: 250px;
+            height: 250px;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            border-radius: 20px;
+            box-shadow: 0 0 20px rgba(255, 51, 102, 0.1);
+        }
+        
+        .scanner-bracket::before, .scanner-bracket::after {
+            content: '';
+            position: absolute;
+            width: 40px;
+            height: 40px;
+            border-color: var(--primary);
+            border-style: solid;
+            transition: all 0.3s ease;
+        }
+        
+        .scanner-bracket::before {
+            top: -1px; left: -1px;
+            border-width: 2px 0 0 2px;
+            border-radius: 20px 0 0 0;
+        }
+        
+        .scanner-bracket::after {
+            bottom: -1px; right: -1px;
+            border-width: 0 2px 2px 0;
+            border-radius: 0 0 20px 0;
+        }
+
+        /* Scanning Laser Animation */
+        .scan-line {
+            width: 100%;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, var(--primary), transparent);
+            position: absolute;
+            top: 0;
+            animation: scan 2s infinite linear;
+            opacity: 0.7;
+        }
+
+        @keyframes scan {
+            0% { top: 0%; opacity: 0; }
+            10% { opacity: 1; }
+            90% { opacity: 1; }
+            100% { top: 100%; opacity: 0; }
+        }
+
+        /* Controls / Start Button */
+        #start-screen {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.85);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 20;
+            pointer-events: auto;
+            backdrop-filter: blur(5px);
+        }
+
+        .btn-start {
+            background: linear-gradient(45deg, #ff3366, #ff5e62);
+            border: none;
+            padding: 15px 40px;
+            color: white;
+            font-size: 1.1rem;
+            border-radius: 30px;
+            cursor: pointer;
+            box-shadow: 0 10px 20px rgba(255, 51, 102, 0.4);
+            transition: transform 0.2s;
+            text-transform: uppercase;
+            font-weight: bold;
+            letter-spacing: 1px;
+        }
+
+        .btn-start:active {
+            transform: scale(0.95);
+        }
+
+        .instruction {
+            color: #ccc;
+            margin-bottom: 30px;
+            text-align: center;
+            max-width: 80%;
+            line-height: 1.5;
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        /* Loading Spinner */
+        .loader {
+            border: 3px solid rgba(255,255,255,0.1);
+            border-radius: 50%;
+            border-top: 3px solid var(--primary);
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin-bottom: 20px;
+            display: none;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+    </style>
+</head>
+<body>
+
+    <!-- Start / Loading Screen -->
+    <div id="start-screen">
+        <div class="loader" id="loader"></div>
+        <h2 style="color:white; margin-bottom:10px;">VIRTUAL HEART AR</h2>
+        <p class="instruction">Arahkan kamera ke gelang (atau gambar target demo) untuk melihat detak jantung digital.</p>
+        <button class="btn-start" id="start-button">Mulai Kamera</button>
+    </div>
+
+    <!-- UI Overlay saat AR aktif -->
+    <div id="ui-layer" class="hidden">
+        <div class="header">
+            <h1>Product Name</h1>
+            <div class="status-pill" id="status-text">Scanning Target...</div>
+        </div>
+        
+        <div class="scanner-bracket">
+            <div class="scan-line"></div>
+        </div>
+        
+        <div style="padding: 20px; text-align: center; color: rgba(255,255,255,0.5); font-size: 0.8rem;">
+            Powered by WebAR
+        </div>
+    </div>
+
+    <!-- Container Render 3D -->
+    <div id="container"></div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { MindARThree } from 'mindar-image-three';
+
+        // --- Variabel Global ---
+        let mindarThree = null;
+        let heartMesh = null;
+        let pulseSpeed = 2.5; // Kecepatan detak
+        let isTracking = false;
+
+        const startButton = document.getElementById('start-button');
+        const startScreen = document.getElementById('start-screen');
+        const loader = document.getElementById('loader');
+        const uiLayer = document.getElementById('ui-layer');
+        const statusText = document.getElementById('status-text');
+
+        // --- Fungsi Membuat Jantung 3D Procedural ---
+        // Kita gunakan ini agar tidak perlu load eksternal .glb untuk demo ini
+        function createProceduralHeart() {
+            const x = 0, y = 0;
+            const heartShape = new THREE.Shape();
+
+            // Menggambar bentuk hati menggunakan kurva Bezier
+            heartShape.moveTo(x + 0.5, y + 0.5);
+            heartShape.bezierCurveTo(x + 0.5, y + 0.5, x + 0.4, y, x, y);
+            heartShape.bezierCurveTo(x - 0.6, y, x - 0.6, y + 0.7, x - 0.6, y + 0.7);
+            heartShape.bezierCurveTo(x - 0.6, y + 1.1, x - 0.3, y + 1.54, x + 0.5, y + 1.9);
+            heartShape.bezierCurveTo(x + 1.2, y + 1.54, x + 1.6, y + 1.1, x + 1.6, y + 0.7);
+            heartShape.bezierCurveTo(x + 1.6, y + 0.7, x + 1.6, y, x + 1.0, y);
+            heartShape.bezierCurveTo(x + 0.7, y, x + 0.5, y + 0.5, x + 0.5, y + 0.5);
+
+            // Ekstrusi bentuk 2D menjadi 3D
+            const extrudeSettings = {
+                depth: 0.4,
+                bevelEnabled: true,
+                bevelSegments: 4,
+                steps: 2,
+                bevelSize: 0.1,
+                bevelThickness: 0.1
+            };
+
+            const geometry = new THREE.ExtrudeGeometry(heartShape, extrudeSettings);
+            
+            // Material agar terlihat seperti Kristal/Ruby
+            const material = new THREE.MeshPhysicalMaterial({
+                color: 0xff0040,      // Merah
+                emissive: 0x550000,   // Glow merah gelap
+                metalness: 0.1,
+                roughness: 0.1,
+                clearcoat: 1.0,       // Lapisan kilap
+                clearcoatRoughness: 0.1,
+                transmission: 0.2,    // Sedikit transparan
+                opacity: 0.9,
+                transparent: true
+            });
+
+            const mesh = new THREE.Mesh(geometry, material);
+            
+            // Center the geometry
+            geometry.center();
+            
+            // Rotasi awal agar berdiri tegak menghadap kamera
+            mesh.rotation.x = Math.PI; 
+            
+            return mesh;
+        }
+
+        // --- Inisialisasi AR ---
+        async function initAR() {
+            // Tampilkan loading
+            startButton.style.display = 'none';
+            loader.style.display = 'block';
+
+            // Setup MindAR
+            // NOTE: 'imageTargetSrc' di sini menggunakan file contoh dari CDN MindAR (kartu).
+            // Untuk produksi: Anda harus mengcompile gambar gelang Anda menjadi .mind file
+            // menggunakan Compiler Tools MindAR: https://hiukim.github.io/mind-ar-js-doc/tools/compile
+            mindarThree = new MindARThree({
+                container: document.querySelector('#container'),
+                imageTargetSrc: "https://cdn.jsdelivr.net/gh/hiukim/mind-ar-js@1.2.0/examples/image-tracking/assets/card-example/card.mind",
+                filterMinCF: 0.0001, // Smoothing tracking
+                filterBeta: 0.001,
+            });
+
+            const { renderer, scene, camera } = mindarThree;
+
+            // Setup Lighting
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambientLight);
+
+            const pointLight = new THREE.PointLight(0xffffff, 2);
+            pointLight.position.set(0, 0, 5); // Cahaya dari arah kamera
+            scene.add(pointLight);
+            
+            // Cahaya merah tambahan untuk efek dramatis
+            const redLight = new THREE.PointLight(0xff0040, 1.5, 2);
+            redLight.position.set(0, 0.5, 0.5);
+            scene.add(redLight);
+
+            // Setup Anchor (Marker Index 0)
+            const anchor = mindarThree.addAnchor(0);
+            
+            // Tambahkan Heart ke Anchor
+            heartMesh = createProceduralHeart();
+            heartMesh.scale.set(0.3, 0.3, 0.3); // Skala awal
+            
+            // Group untuk animasi
+            const heartGroup = new THREE.Group();
+            heartGroup.add(heartMesh);
+            
+            // Posisikan sedikit di atas marker (floating effect)
+            heartGroup.position.z = 0.5; 
+            
+            anchor.group.add(heartGroup);
+
+            // Event Listeners untuk Tracking Status
+            anchor.onTargetFound = () => {
+                isTracking = true;
+                statusText.innerText = "Target Found - Connected";
+                statusText.style.borderColor = "#00ff00";
+                statusText.style.color = "#00ff00";
+                statusText.style.background = "rgba(0, 255, 0, 0.1)";
+                document.querySelector('.scanner-bracket').style.borderColor = "#00ff00";
+            };
+
+            anchor.onTargetLost = () => {
+                isTracking = false;
+                statusText.innerText = "Scanning for Bracelet...";
+                statusText.style.borderColor = "#ff3366";
+                statusText.style.color = "#ff3366";
+                statusText.style.background = "rgba(255, 51, 102, 0.2)";
+                document.querySelector('.scanner-bracket').style.borderColor = "rgba(255, 255, 255, 0.3)";
+            };
+
+            // Start AR Engine
+            try {
+                await mindarThree.start();
+                
+                // Transisi UI
+                startScreen.classList.add('hidden');
+                uiLayer.classList.remove('hidden');
+                
+                // Animation Loop
+                renderer.setAnimationLoop(() => {
+                    renderLoop();
+                    renderer.render(scene, camera);
+                });
+                
+            } catch (error) {
+                console.error("Gagal memulai AR:", error);
+                alert("Gagal mengakses kamera. Pastikan izin kamera diberikan dan menggunakan HTTPS.");
+                loader.style.display = 'none';
+                startButton.style.display = 'block';
+            }
+        }
+
+        // --- Render / Animation Loop ---
+        function renderLoop() {
+            if (heartMesh) {
+                const time = Date.now() * 0.001;
+                
+                // 1. Animasi Detak Jantung (Pulse)
+                // Menggunakan fungsi sin untuk pembesaran dan pengecilan ritmis
+                // Pola detak jantung manusia: "Lubb-dupp" (dua puncak cepat)
+                // Kita simulasi sederhana dengan sin wave yang dimodifikasi
+                
+                const pulse = Math.sin(time * pulseSpeed * Math.PI) * 0.1 + 1; // Base pulse
+                
+                // Tambahkan efek rotasi lambat agar terlihat 3D
+                heartMesh.rotation.y = Math.sin(time * 0.5) * 0.3; // Swing kiri kanan pelan
+                
+                // Terapkan scale
+                const baseScale = 0.3;
+                const currentScale = baseScale * pulse;
+                heartMesh.scale.set(currentScale, currentScale, currentScale);
+                
+                // 2. Animasi Emissive (Glow intensity berubah sesuai detak)
+                heartMesh.material.emissiveIntensity = (pulse - 0.8) * 3; // Glow makin terang saat membesar
+            }
+        }
+
+        // Event Start Button
+        startButton.addEventListener('click', () => {
+            initAR();
+        });
+
+    </script>
+</body>
+</html>
